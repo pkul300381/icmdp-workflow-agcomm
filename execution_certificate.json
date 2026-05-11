@@ -1,0 +1,63 @@
+[
+  {
+    "step": 0,
+    "timestamp": "2026-05-11 18:04:50.262104",
+    "belief_state": "State(vendor=VendorA, ask=$100.0, inv=1, eco=0, rep=0.66, t=0.0s, spent=$0.00)",
+    "t_elapsed_s": 1.0,
+    "budget_spent": 0.0,
+    "admissible_actions": [
+      "Query(VendorA)",
+      "DeepQuery(VendorA)",
+      "Accept(VendorA)",
+      "Reject(VendorA)",
+      "VerifyCompliance(VendorA)",
+      "RequestCertification(VendorA)",
+      "EscalateToHuman(VendorA)",
+      "Abandon(VendorA)",
+      "SwitchVendor(VendorA)",
+      "Bid(VendorA, $100.0)",
+      "CounterBid(VendorA, $100.0)",
+      "RequestDiscount(VendorA, $100.0)",
+      "Pay(VendorA, $100.0, rail=ISO_20022)",
+      "Bid(VendorA, $150.0)",
+      "CounterBid(VendorA, $150.0)",
+      "RequestDiscount(VendorA, $150.0)",
+      "Pay(VendorA, $150.0, rail=ISO_20022)",
+      "Bid(VendorA, $200.0)",
+      "CounterBid(VendorA, $200.0)",
+      "RequestDiscount(VendorA, $200.0)",
+      "Pay(VendorA, $200.0, rail=ISO_20022)",
+      "RequestDiscount(VendorA, $500.0)"
+    ],
+    "selected_action": "SwitchVendor(VendorA)",
+    "reward": 0.0,
+    "constraints_satisfied": true,
+    "active_constraints": [
+      {
+        "name": "budget_constraint_<=200.0",
+        "hardness": "soft",
+        "relaxation_priority": 2
+      },
+      {
+        "name": "inventory_constraint",
+        "hardness": "hard",
+        "relaxation_priority": 0
+      },
+      {
+        "name": "compliance_constraint",
+        "hardness": "hard",
+        "relaxation_priority": 0
+      },
+      {
+        "name": "payment_rail_constraint",
+        "hardness": "hard",
+        "relaxation_priority": 0
+      },
+      {
+        "name": "geo_restriction_constraint",
+        "hardness": "hard",
+        "relaxation_priority": 0
+      }
+    ]
+  }
+]
