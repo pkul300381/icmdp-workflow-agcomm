@@ -1,0 +1,543 @@
+# =============================================================================
+# ICMDP Agentic Commerce — Master Configuration
+# All runtime behavior is driven by this file. No code changes are needed to
+# adjust states, actions, constraints, policies, or probabilities.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# 1. STATE SPACE  (S in the ICMDP tuple)
+# -----------------------------------------------------------------------------
+state_space:
+
+  vendor_state:
+    # Discrete ask-price bins (p_ask ∈ S). Paper §6.2 discretises the
+    # naturally continuous price to satisfy the finite-state MDP assumption.
+    p_ask_levels: [100.0, 150.0, 200.0, 500.0]
+
+    # Inventory sampling weights. [0] appears once; [1] appears inv_high_prob_weight times.
+    # Higher weight → higher probability the vendor has stock at episode start.
+    inv_high_prob_weight: 3          # results in P(inv=1) = 0.75
+
+    # Carbon-neutral / eco-certification options (0 = not certified, 1 = certified)
+    eco_options: [0, 1]
+
+    # Vendor reputation score drawn uniformly from [min, max]
+    reputation_range: [0.5, 1.0]
+
+    # Metadata fields — used by hard constraints; extend State when needed
+    default_vendor_tier: "trusted"            # {trusted, untrusted, blacklisted}
+    default_compliance: "iso20022_compliant"  # {iso20022_compliant, partial, non_compliant}
+    default_latency_ms: 200.0
+    default_delivery_sla_days: 3
+    default_payment_terms: "net_30"           # {net_30, net_60, immediate, escrow}
+    default_geo_region: "US"
+    default_currency: "USD"
+
+  session_state:
+    # Per-episode session tracking (feeds latency and budget constraints)
+    initial_budget: 200.0            # user's total spend budget for the session
+    max_t_elapsed_seconds: 60.0      # default latency cap (paper §6.3: t_elapsed ≤ 60s)
+    step_duration_seconds: 1.0       # simulated wall-clock seconds consumed per agent step
+    max_items_to_purchase: 1
+
+  # Initial belief prior for BeliefTracker before any observations
+  belief_prior:
+    p_ask: 200.0
+    inv: 1
+    eco: 1     # optimistic: assume eco-certified until observed otherwise
+    rep: 0.8
+
+
+# -----------------------------------------------------------------------------
+# 2. ACTION SPACE  (A in the ICMDP tuple)
+# -----------------------------------------------------------------------------
+action_space:
+
+  # Toggle individual action types on/off without touching Python.
+  # Removing a type here prunes it from A globally.
+  enabled_action_types:
+    - Query               # observe public vendor info (low cost)
+    - DeepQuery           # observe private/hidden vendor info (higher cost)
+    - Bid                 # submit a price offer
+    - CounterBid          # counter-offer in multi-round negotiation
+    - Accept              # accept the current ask price
+    - Reject              # reject and end negotiation with this vendor
+    - Pay                 # execute settlement
+    - RequestDiscount     # ask for volume discount
+    - VerifyCompliance    # trigger regulatory compliance check
+    - RequestCertification  # request eco/compliance certificate
+    - SwitchVendor        # pivot to an alternative vendor
+    - EscalateToHuman     # meta-action: hand off to human (paper §4.3)
+    - Abandon             # abort entire transaction
+
+  # Discrete price levels for Bid, CounterBid, RequestDiscount, Pay actions.
+  # Should align with or be a subset of state_space.vendor_state.p_ask_levels.
+  bid_price_levels: [100.0, 150.0, 200.0, 500.0]
+
+  # Payment rail used for all Pay actions during training and execution.
+  # Change this to switch the settlement channel without any code change.
+  default_payment_rail: ISO_20022
+
+  # Subset of rails enabled for this deployment (used for payment_rail_constraint).
+  allowed_payment_rails:
+    - ISO_20022
+    - ACH
+    - USDC
+    - BTC_LIGHTNING
+    - ESCROW_SMART_CONTRACT
+
+  # Full payment rail catalogue — metadata for audit, routing, and UI display.
+  # Each rail is referenced by its `id` field.
+  payment_rails:
+
+    traditional:
+      - id: SWIFT
+        description: "Society for Worldwide Interbank Financial Telecommunication"
+        avg_settlement_seconds: 86400
+        cost_pct: 0.003
+        requires_compliance: ["iso20022_compliant"]
+
+      - id: ACH
+        description: "Automated Clearing House (US domestic)"
+        avg_settlement_seconds: 86400
+        cost_pct: 0.001
+        requires_compliance: []
+
+      - id: ISO_20022
+        description: "ISO 20022 structured financial messaging (cross-border)"
+        avg_settlement_seconds: 3600
+        cost_pct: 0.002
+        requires_compliance: ["iso20022_compliant"]
+
+      - id: SEPA
+        description: "Single Euro Payments Area (EU)"
+        avg_settlement_seconds: 86400
+        cost_pct: 0.001
+        requires_compliance: []
+
+      - id: WIRE
+        description: "Domestic or international wire transfer"
+        avg_settlement_seconds: 3600
+        cost_pct: 0.0025
+        requires_compliance: []
+
+      - id: LETTER_OF_CREDIT
+        description: "Trade finance letter of credit"
+        avg_settlement_seconds: 259200
+        cost_pct: 0.01
+        requires_compliance: []
+
+    card:
+      - id: CREDIT_CARD
+        description: "Credit card network (Visa / Mastercard / Amex)"
+        avg_settlement_seconds: 1
+        cost_pct: 0.025
+        requires_compliance: []
+
+      - id: DEBIT_CARD
+        description: "Debit card network"
+        avg_settlement_seconds: 1
+        cost_pct: 0.015
+        requires_compliance: []
+
+    digital_wallet:
+      - id: PAYPAL
+        description: "PayPal digital wallet"
+        avg_settlement_seconds: 1
+        cost_pct: 0.029
+        requires_compliance: []
+
+      - id: APPLE_PAY
+        description: "Apple Pay (NFC / in-app)"
+        avg_settlement_seconds: 1
+        cost_pct: 0.015
+        requires_compliance: []
+
+      - id: GOOGLE_PAY
+        description: "Google Pay"
+        avg_settlement_seconds: 1
+        cost_pct: 0.015
+        requires_compliance: []
+
+      - id: ALIPAY
+        description: "Alipay (China / international)"
+        avg_settlement_seconds: 1
+        cost_pct: 0.006
+        requires_compliance: []
+
+      - id: WECHAT_PAY
+        description: "WeChat Pay"
+        avg_settlement_seconds: 1
+        cost_pct: 0.006
+        requires_compliance: []
+
+    qr_code:
+      - id: UPI_QR
+        description: "Unified Payments Interface QR (India, real-time)"
+        avg_settlement_seconds: 1
+        cost_pct: 0.0
+        requires_compliance: []
+
+      - id: PIX_QR
+        description: "PIX instant payment QR (Brazil, real-time)"
+        avg_settlement_seconds: 1
+        cost_pct: 0.0
+        requires_compliance: []
+
+      - id: QR_CBDC
+        description: "QR code backed by Central Bank Digital Currency"
+        avg_settlement_seconds: 1
+        cost_pct: 0.0005
+        requires_compliance: []
+
+      - id: PROMPTPAY_QR
+        description: "PromptPay QR (Thailand, real-time)"
+        avg_settlement_seconds: 1
+        cost_pct: 0.0
+        requires_compliance: []
+
+      - id: FPS_QR
+        description: "Faster Payments Service QR (UK)"
+        avg_settlement_seconds: 1
+        cost_pct: 0.0005
+        requires_compliance: []
+
+    stablecoin:
+      - id: USDC
+        description: "USD Coin (Circle) — ERC-20 / multi-chain stablecoin"
+        avg_settlement_seconds: 15
+        cost_pct: 0.0005
+        requires_compliance: []
+
+      - id: USDT
+        description: "Tether USD stablecoin (OMNI / ERC-20 / TRC-20)"
+        avg_settlement_seconds: 15
+        cost_pct: 0.0005
+        requires_compliance: []
+
+      - id: DAI
+        description: "MakerDAO DAI — decentralised, overcollateralised stablecoin"
+        avg_settlement_seconds: 15
+        cost_pct: 0.0008
+        requires_compliance: []
+
+      - id: BUSD
+        description: "Binance USD stablecoin (BEP-20)"
+        avg_settlement_seconds: 5
+        cost_pct: 0.0003
+        requires_compliance: []
+
+      - id: PYUSD
+        description: "PayPal USD stablecoin (Ethereum / Solana)"
+        avg_settlement_seconds: 10
+        cost_pct: 0.001
+        requires_compliance: []
+
+      - id: TUSD
+        description: "TrueUSD — fully attested stablecoin"
+        avg_settlement_seconds: 15
+        cost_pct: 0.0005
+        requires_compliance: []
+
+      - id: FDUSD
+        description: "First Digital USD — regulated stablecoin (Hong Kong)"
+        avg_settlement_seconds: 10
+        cost_pct: 0.0005
+        requires_compliance: []
+
+    crypto:
+      - id: BTC
+        description: "Bitcoin on-chain payment (Layer 1)"
+        avg_settlement_seconds: 3600
+        cost_pct: 0.001
+        requires_compliance: []
+
+      - id: ETH
+        description: "Ethereum on-chain payment (Layer 1)"
+        avg_settlement_seconds: 15
+        cost_pct: 0.002
+        requires_compliance: []
+
+      - id: SOL
+        description: "Solana on-chain payment (sub-second finality)"
+        avg_settlement_seconds: 1
+        cost_pct: 0.00005
+        requires_compliance: []
+
+      - id: XRP
+        description: "XRP Ledger payment (4-second finality)"
+        avg_settlement_seconds: 4
+        cost_pct: 0.00001
+        requires_compliance: []
+
+      - id: BTC_LIGHTNING
+        description: "Bitcoin Lightning Network — instant, near-zero fee (Layer 2)"
+        avg_settlement_seconds: 1
+        cost_pct: 0.00001
+        requires_compliance: []
+
+      - id: MATIC
+        description: "Polygon (MATIC) payment — Ethereum L2 sidechain"
+        avg_settlement_seconds: 2
+        cost_pct: 0.0001
+        requires_compliance: []
+
+      - id: AVAX
+        description: "Avalanche C-Chain payment"
+        avg_settlement_seconds: 2
+        cost_pct: 0.0001
+        requires_compliance: []
+
+    cbdc:
+      - id: DIGITAL_DOLLAR
+        description: "US Federal Reserve CBDC (FedNow / proposed retail CBDC)"
+        avg_settlement_seconds: 1
+        cost_pct: 0.0
+        requires_compliance: ["iso20022_compliant"]
+
+      - id: DIGITAL_EURO
+        description: "European Central Bank digital euro"
+        avg_settlement_seconds: 1
+        cost_pct: 0.0
+        requires_compliance: ["iso20022_compliant"]
+
+      - id: DIGITAL_YUAN
+        description: "People's Bank of China e-CNY"
+        avg_settlement_seconds: 1
+        cost_pct: 0.0
+        requires_compliance: []
+
+      - id: DKRONE
+        description: "Danmarks Nationalbank digital krone (pilot)"
+        avg_settlement_seconds: 1
+        cost_pct: 0.0
+        requires_compliance: []
+
+    escrow:
+      - id: ESCROW_SMART_CONTRACT
+        description: "On-chain smart contract escrow (automatic release on condition)"
+        avg_settlement_seconds: 15
+        cost_pct: 0.001
+        requires_compliance: []
+
+      - id: ESCROW_TRADITIONAL
+        description: "Third-party escrow service (manual release)"
+        avg_settlement_seconds: 86400
+        cost_pct: 0.01
+        requires_compliance: []
+
+
+# -----------------------------------------------------------------------------
+# 3. INTENT CONSTRAINTS  (I : S → 2^A in the ICMDP tuple)
+# -----------------------------------------------------------------------------
+# Each constraint has:
+#   type:                 "hard"  — zero-violation, never relaxed (paper Eq. 10/25)
+#                         "soft"  — relaxable, subject to relaxation_priority order
+#   relaxation_priority:  0       = never relax (hard constraints always use 0)
+#                         1..N    = soft constraints; lower number → dropped first
+#   keywords:             instruction keywords that activate this constraint
+#   always_active:        true → enforce regardless of instruction keywords
+# -----------------------------------------------------------------------------
+intent_constraints:
+
+  definitions:
+
+    # --- Soft constraints (relaxable, lowest priority dropped first) ----------
+
+    eco_constraint:
+      type: soft
+      relaxation_priority: 1
+      always_active: false
+      description: "Vendor must be carbon-neutral / eco-certified"
+      keywords: ["carbon-neutral", "carbon neutral", "eco-friendly", "eco friendly",
+                 "green", "sustainable", "climate"]
+
+    budget_constraint:
+      type: soft
+      relaxation_priority: 2
+      always_active: false
+      description: "Transaction price must not exceed the user's stated budget"
+      keywords: ["max", "under", "no more than", "budget", "spend", "spending", "cost", "price"]
+
+    latency_constraint:
+      type: soft
+      relaxation_priority: 3
+      always_active: false
+      description: "Transaction must complete within the allowed time window (paper §6.3)"
+      keywords: ["within", "second", "seconds", "minute", "minutes", "fast", "quick", "urgent"]
+      default_max_seconds: 60.0   # overridden if a numeric value is found in the instruction
+
+    reputation_constraint:
+      type: soft
+      relaxation_priority: 4
+      always_active: false
+      description: "Vendor reputation score must meet the minimum threshold"
+      keywords: ["trusted", "reliable", "reputable", "verified", "high-rated"]
+      default_min_reputation: 0.7
+
+    delivery_sla_constraint:
+      type: soft
+      relaxation_priority: 5
+      always_active: false
+      description: "Vendor delivery SLA must be within the stated limit"
+      keywords: ["deliver", "delivery", "shipping", "sla", "days", "lead time"]
+      default_max_days: 5
+
+    # --- Hard constraints (zero-violation, never relaxed) --------------------
+
+    inventory_constraint:
+      type: hard
+      relaxation_priority: 0
+      always_active: true
+      description: "Vendor must have inventory available before accepting or paying"
+
+    vendor_trust_constraint:
+      type: hard
+      relaxation_priority: 0
+      always_active: false
+      description: "Vendor must be in the trusted tier (Proposition 4.1 example: 'never transact with unverified seller')"
+      keywords: ["trusted vendor", "verified vendor", "certified vendor", "authorised vendor"]
+
+    compliance_constraint:
+      type: hard
+      relaxation_priority: 0
+      always_active: true
+      description: "Vendor must meet the required compliance status"
+      required_status: "iso20022_compliant"
+
+    payment_rail_constraint:
+      type: hard
+      relaxation_priority: 0
+      always_active: true
+      description: "Payment rail must be in the allowed_payment_rails list (enforced structurally)"
+
+    geo_restriction_constraint:
+      type: hard
+      relaxation_priority: 0
+      always_active: true
+      description: "Vendor must be in an allowed geographic region"
+      allowed_regions: ["US", "EU", "UK", "CA", "AU", "SG", "JP"]
+
+  parser:
+    backend: llm_anthropic      # {regex, llm_anthropic, llm_openai, llm_local}
+    confidence_threshold: 0.75  # minimum LLM confidence to activate a parsed constraint
+    ambiguity_resolution: most_conservative   # {ask_user, most_likely, most_conservative}
+    re_parse_on_state_change: false
+
+# -----------------------------------------------------------------------------
+# 5. SECRET MANAGEMENT
+# -----------------------------------------------------------------------------
+secret_management:
+  provider: keyring             # {env, keyring, aws, azure, atlassian}
+  key_name: CLAUDE_API_KEY      # name of the secret/key to fetch
+  keyring_service: icmdp-agent  # used if provider = keyring
+  aws_region: us-east-1         # used if provider = aws
+  azure_vault_url: ""           # used if provider = azure
+
+
+# -----------------------------------------------------------------------------
+# 4. POLICIES  (π : S → Δ(A))
+# -----------------------------------------------------------------------------
+policies:
+
+  solver:
+    type: masked_q_learning   # {masked_q_learning, value_iteration, policy_gradient}
+    # Masked Q-learning hyperparameters (paper §4.6.3, Eq. 20)
+    alpha: 0.2                # learning rate ∈ (0, 1]
+    gamma: 0.9                # discount factor ∈ [0, 1)
+    epsilon: 0.3              # initial exploration rate (ε-greedy)
+    epsilon_decay: 0.995      # multiplicative decay applied after each episode
+    epsilon_min: 0.05         # floor on exploration rate
+    # Training loop settings
+    training_episodes: 500
+    max_steps_per_episode: 10
+    convergence_threshold: 0.001   # used by value_iteration solver type
+
+  feasibility:
+    # Maximum number of soft constraints that may be progressively dropped
+    # before the system declares the state infeasible (paper §4.3)
+    max_relaxations: 2
+    # Response when A_I(s) = ∅ and relaxation budget is exhausted
+    infeasibility_response: relax    # {relax, abort, escalate_human, notify_user}
+    relaxation_cooldown_steps: 0     # steps to wait between successive relaxations
+
+  dynamic_intent:
+    # Governs non-stationary intent I_t(s) ≠ I_{t'}(s) (paper §4.5)
+    update_trigger: on_infeasibility   # {never, on_infeasibility, on_market_change, periodic}
+    update_interval_steps: 10          # used when update_trigger = periodic
+    constraint_injection_mode: full_reparse   # {full_reparse, incremental_update}
+
+  negotiation:
+    initial_bid_strategy: ask_price   # {ask_price, ask_minus_discount, midpoint, conservative}
+    bid_increment: 25.0               # price step size for counter-bidding
+    max_negotiation_rounds: 5         # rounds per vendor before forced accept/reject
+    vendor_selection_strategy: greedy_q   # {greedy_q, round_robin, best_reputation, random}
+    multi_vendor_mode: sequential         # {sequential, parallel_query_then_decide, best_of_n}
+
+  belief_update:
+    # Controls the POMDP belief updater (paper §3.2, Eq. 6)
+    mode: argmax                  # {argmax, full_distribution, particle_filter}
+    observation_noise_model: perfect   # {perfect, gaussian, categorical}
+
+
+# -----------------------------------------------------------------------------
+# 5. STOCHASTIC PROBABILITIES  (P and Z in the ICMDP tuple)
+# -----------------------------------------------------------------------------
+probabilities:
+
+  # P(s' | s, a) — state transition model
+  state_transitions:
+    price_drift_prob: 0.1              # P(price changes on any non-terminal step)
+    price_drift_direction: symmetric   # {up_only, down_only, symmetric}
+    price_drift_magnitude: 50.0        # magnitude used for directional drift (not symmetric)
+    inventory_depletion_prob: 0.05     # P(inv 1→0 | non-terminal step)
+    inventory_restock_prob: 0.02       # P(inv 0→1 | non-terminal step)
+    eco_cert_revocation_prob: 0.01     # P(eco 1→0 | non-terminal step)
+    reputation_decay_rate: 0.005       # std dev of Gaussian noise on rep per step
+
+  # Z(o | s', a) — observation model for the POMDP perception layer (paper §3.2)
+  # Set query_reveals_true_state: true for the argmax / perfect simplification.
+  # Set to false and tune noise parameters for noisy-observation experiments.
+  observation_model:
+    query_reveals_true_state: true      # if true, all noise parameters below are bypassed
+    price_observation_accuracy: 1.0     # P(observed price = true price)
+    inventory_signal_accuracy: 0.95     # P(correct inventory signal)
+    eco_cert_false_positive_rate: 0.02  # P(observe eco=1 | true eco=0)
+    eco_cert_false_negative_rate: 0.01  # P(observe eco=0 | true eco=1)
+    reputation_observation_variance: 0.05  # Gaussian noise std dev on reputation score
+
+  # Market-level stochastic parameters
+  market_model:
+    vendor_acceptance_margin: 0.0      # vendor accepts bid if bid >= ask + margin
+    stockout_prob_per_step: 0.05       # P(vendor sells out to another buyer per step)
+    price_drop_prob_per_step: 0.03     # P(vendor lowers ask price per step)
+    bid_counter_offer_prob: 0.2        # P(vendor counters rather than accept/reject)
+
+  # Intent parsing likelihoods (used when backend = llm_*)
+  intent_parsing:
+    constraint_type_priors:
+      eco_constraint: 0.30
+      budget_constraint: 0.80
+      latency_constraint: 0.20
+      vendor_trust_constraint: 0.40
+      compliance_constraint: 0.30
+      reputation_constraint: 0.25
+    parse_error_rate: 0.05         # P(LLM misinterprets a constraint)
+    over_specification_prob: 0.10  # P(extracted constraints make A_I(s)=∅ at parse time)
+
+
+# -----------------------------------------------------------------------------
+# 6. REWARD FUNCTION  (R : S × A → ℝ)
+# -----------------------------------------------------------------------------
+rewards:
+  query_step_penalty: -1.0           # cost of a standard Query step
+  deep_query_step_penalty: -2.0      # higher cost for DeepQuery (more information)
+  successful_bid_reward: 10.0        # bid accepted (price >= ask)
+  failed_bid_penalty: -5.0           # bid rejected (price < ask)
+  accept_reward: 5.0                 # accepting the vendor's current ask
+  reject_reward: 0.0                 # rejecting (neutral — ends interaction)
+  successful_pay_reward: 100.0       # transaction completed successfully
+  failed_pay_penalty: -50.0          # payment failed (out of stock or underpaid)
+  latency_penalty_per_second: -0.1   # per-second penalty; set to 0.0 to disable
+  escalate_penalty: -10.0            # cost of escalating to human (§4.3 meta-decision)
+  constraint_violation_penalty: -1000.0  # should be unreachable in ICMDP (zero-violation)
